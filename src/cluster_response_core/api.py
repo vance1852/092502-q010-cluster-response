@@ -44,6 +44,49 @@ def route(service: DomainService, method: str, path: str, body: dict[str, Any] |
                 raise ValidationError("site_id 不能为空")
             category = query.get("category", [None])[0]
             return 200, {"items": [item.__dict__ for item in service.list_domain_data(site_id, category)]}
+        # ---- 集群联防 ----
+        if method == "POST" and parsed.path == "/plans":
+            receipt = service.publish_plan(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/signals":
+            receipt = service.report_signal(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/incidents/close":
+            receipt = service.close_incident(actor_id=actor_id, **body)
+            return 200, receipt.__dict__
+        if method == "POST" and parsed.path == "/incidents/open":
+            receipt = service.open_incident(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/incidents/reassign-lead":
+            receipt = service.reassign_lead(actor_id=actor_id, **body)
+            return 200, receipt.__dict__
+        if method == "POST" and parsed.path == "/incidents/adopt-plan":
+            receipt = service.adopt_plan_version(actor_id=actor_id, **body)
+            return 200, receipt.__dict__
+        if method == "GET" and parsed.path == "/incidents":
+            query = parse_qs(parsed.query)
+            status = query.get("status", [None])[0]
+            return 200, {"items": service.list_incidents(actor_id, status)}
+        if method == "GET" and parsed.path.startswith("/incidents/"):
+            incident_id = parsed.path.rsplit("/", 1)[-1]
+            return 200, service.incident_view(incident_id, actor_id)
+        if method == "POST" and parsed.path == "/capabilities":
+            receipt = service.declare_capability(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "GET" and parsed.path == "/capabilities":
+            return 200, service.list_capabilities(actor_id)
+        if method == "POST" and parsed.path == "/allocations/reserve":
+            receipt = service.reserve_capability(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/allocations/confirm":
+            receipt = service.confirm_capability(actor_id=actor_id, **body)
+            return 200, receipt.__dict__
+        if method == "POST" and parsed.path == "/allocations/release":
+            receipt = service.release_capability(actor_id=actor_id, **body)
+            return 200, receipt.__dict__
+        if method == "POST" and parsed.path == "/capabilities/withdraw":
+            receipt = service.withdraw_capability(actor_id=actor_id, **body)
+            return 200, receipt.__dict__
         if method == "GET" and parsed.path == "/audit-events":
             query = parse_qs(parsed.query)
             after = int(query.get("after_sequence", ["0"])[0])

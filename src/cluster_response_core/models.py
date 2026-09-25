@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -26,6 +26,7 @@ class Site:
     name: str
     timezone_name: str
     version: int
+    cluster_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -49,3 +50,59 @@ class WriteReceipt:
     resource_type: str
     resource_id: str
     replayed: bool
+
+
+@dataclass(frozen=True)
+class Plan:
+    """表示一个版本化应急预案。"""
+
+    plan_id: str
+    version: int
+    cluster_id: str
+    escalation_rule: dict[str, Any]
+    lead_by_classification: dict[str, str]
+    response_minutes_by_level: dict[str, int]
+    published_by: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class Signal:
+    """表示企业上报的一条脱敏风险信号（含重复合并后的状态）。"""
+
+    signal_id: str
+    incident_id: str
+    site_id: str
+    organization_id: str
+    fingerprint: str
+    severity: str
+    supply_code: str | None
+    payload: dict[str, Any]
+    occurred_at: str
+    repeat_count: int
+    in_appendix: bool
+    created_by: str
+    created_at: str
+    reports: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class Incident:
+    """表示由信号汇聚而成的应急事件。"""
+
+    incident_id: str
+    cluster_id: str
+    signal_type: str
+    plan_id: str
+    plan_version: int
+    level: int
+    classification: str
+    lead_actor_id: str
+    lead_overridden: bool
+    response_due_at: str
+    status: str
+    version: int
+    created_at: str
+    closed_at: str | None = None
+    signals: list[Signal] = field(default_factory=list)
+
