@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .errors import DomainError, ValidationError
+from .joint_service import JointDefenseService
 from .service import DomainService
 from .storage import Database
 
@@ -48,11 +50,94 @@ def route(service: DomainService, method: str, path: str, body: dict[str, Any] |
             query = parse_qs(parsed.query)
             after = int(query.get("after_sequence", ["0"])[0])
             return 200, {"items": service.audit_events(after)}
+        joint_result = _route_joint(service, method, parsed, body, actor_id)
+        if joint_result is not None:
+            return joint_result
         return 404, {"error": "route_not_found", "message": "接口不存在"}
     except DomainError as exc:
         return exc.status, {"error": exc.code, "message": str(exc)}
-    except (TypeError, ValueError) as exc:
-        return 400, {"error": "invalid_request", "message": str(exc)}
+    except (TypeError, KeyError, ValueError) as exc:
+        return 400, {"error": "invalid_request", "message": f"请求字段缺失或格式无效: {exc}"}
+
+
+_INCIDENT_ITEM = re.compile(r"^/incidents/([^/]+)(/(commander|close|reservations|confirmations|releases|command-chain))?$")
+
+
+def _route_joint(service: DomainService, method: str, parsed, body: dict[str, Any],
+                 actor_id: str) -> tuple[int, dict[str, Any]] | None:
+    """分派集群联防协同相关路由。基础服务也持有同一数据库上的联防视图。"""
+
+    joint = JointDefenseService(service.database, service.clock)
+    path = parsed.path
+    query = parse_qs(parsed.query)
+
+    if method == "POST" and path == "/plans":
+        result = joint.publish_plan(actor_id=actor_id, **body)
+        return 200 if result.receipt.replayed else 201, result.as_dict()
+    if method == "GET" and path == "/plans":
+        plan_id = query.get("plan_id", [""])[0]
+        if not plan_id:
+            raise ValidationError("plan_id 不能为空")
+        version = query.get("version", [None])[0]
+        plan = joint.get_plan(plan_id, int(version) if version else None)
+        return 200, {"plan_id": plan.plan_id, "version": plan.version, "name": plan.name,
+                     "active": plan.active, "default_level": plan.default_level,
+                     "append_window_minutes": plan.append_window_minutes,
+                     "levels": [level.__dict__ for level in plan.levels],
+                     "rules": list(plan.rules), "created_by": plan.created_by,
+                     "created_at": plan.created_at}
+    if method == "POST" and path == "/signals":
+        result = joint.report_signal(actor_id=actor_id, **body)
+        return 200 if result.receipt.replayed else 201, result.as_dict()
+    if method == "POST" and path == "/signals/withdraw":
+        result = joint.withdraw_signal_source(actor_id=actor_id, **body)
+        return 200, result.as_dict()
+    if method == "POST" and path == "/capacities":
+        result = joint.declare_capacity(actor_id=actor_id, **body)
+        return 200 if result.receipt.replayed else 201, result.as_dict()
+    if method == "GET" and path == "/capacities":
+        include_inactive = query.get("include_inactive", ["0"])[0] in ("1", "true")
+        return 200, joint.list_capacities(actor_id, include_inactive=include_inactive)
+
+    capacity_match = re.fullmatch(r"/capacities/([^/]+)/update", path)
+    if method == "POST" and capacity_match:
+        result = joint.update_capacity(actor_id=actor_id, capacity_id=capacity_match.group(1), **body)
+        return 200, result.as_dict()
+
+    if method == "GET" and path == "/incidents":
+        status = query.get("status", [None])[0]
+        return 200, joint.list_incidents(actor_id, status)
+
+    match = _INCIDENT_ITEM.fullmatch(path)
+    if match:
+        incident_id, subpart = match.group(1), match.group(3)
+        if method == "GET" and subpart is None:
+            return 200, joint.get_incident(actor_id, incident_id)
+        if method == "GET" and subpart == "command-chain":
+            return 200, joint.commander_chain(actor_id, incident_id)
+        if method == "POST" and subpart == "commander":
+            result = joint.assign_commander(actor_id=actor_id, incident_id=incident_id, **body)
+            return 200, result.as_dict()
+        if method == "POST" and subpart == "close":
+            result = joint.close_incident(actor_id=actor_id, incident_id=incident_id, **body)
+            return 200, result.as_dict()
+        if method == "POST" and subpart == "reservations":
+            result = joint.reserve_capacities(
+                actor_id=actor_id, incident_id=incident_id,
+                request_id=body["request_id"], requests=body["requests"])
+            return 200 if result.receipt.replayed else 201, result.as_dict()
+        if method == "POST" and subpart == "confirmations":
+            result = joint.confirm_allocations(
+                actor_id=actor_id, incident_id=incident_id,
+                request_id=body["request_id"], allocation_ids=body["allocation_ids"],
+                expected_versions=body.get("expected_versions"))
+            return 200, result.as_dict()
+        if method == "POST" and subpart == "releases":
+            result = joint.release_allocations(
+                actor_id=actor_id, incident_id=incident_id,
+                request_id=body["request_id"], allocation_ids=body["allocation_ids"])
+            return 200, result.as_dict()
+    return None
 
 
 class Handler(BaseHTTPRequestHandler):
